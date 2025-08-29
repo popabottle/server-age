@@ -1,116 +1,144 @@
-// worker.js - 24/7 Roblox Server Monitor (Web Service Version)
-// This script runs as a web service to stay awake on Render's free tier.
-// CORRECTED: Added a check for valid date and increased polling interval to avoid rate limiting.
-
-// --- IMPORTS ---
+// Import necessary modules from Firebase SDK and node-fetch
 import { initializeApp } from "firebase/app";
-import { getFirestore, collection, doc, getDocs, setDoc, updateDoc } from "firebase/firestore";
+import { getFirestore, collection, doc, getDocs, setDoc, updateDoc, writeBatch } from "firebase/firestore";
 import fetch from 'node-fetch';
-import http from 'http'; // Import the built-in HTTP module
+import http from 'http';
 
 // --- CONFIGURATION ---
-// !!! IMPORTANT: This has been updated with your Firebase project's configuration. !!!
+// This has been updated with your Firebase credentials.
 const firebaseConfig = {
-  apiKey: "AIzaSyDb3OPy_7Zc7cwlsC2Kz2cdzfT2R6HLseI",
-  authDomain: "server-f6123.firebaseapp.com",
-  projectId: "server-f6123",
-  storageBucket: "server-f6123.appspot.com",
-  messagingSenderId: "189465017648",
-  appId: "1:189465017648:web:a07cee03ea2b9702ab9cf5",
-  measurementId: "G-G66FFHRDSJ"
+    apiKey: "AIzaSyDb3OPy_7Zc7cwlsC2Kz2cdzfT2R6HLseI",
+    authDomain: "server-f6123.firebaseapp.com",
+    projectId: "server-f6123",
+    storageBucket: "server-f6123.appspot.com",
+    messagingSenderId: "189465017648",
+    appId: "1:189465017648:web:a07cee03ea2b9702ab9cf5",
+    measurementId: "G-G66FFHRDSJ"
 };
 
 const ROBLOX_API_URL = 'https://games.roblox.com/v1/games/14289997240/servers/0?sortOrder=2&excludeFullGames=false&limit=100';
-// *** FIX: Increased polling interval to 45 seconds to avoid 429 Too Many Requests error ***
-const POLLING_INTERVAL_MS = 45000; 
+const POLLING_INTERVAL_MS = 45 * 1000; // 45 seconds to avoid rate-limiting
 const SERVERS_COLLECTION = 'servers';
-const PORT = process.env.PORT || 10000; // Render provides a PORT environment variable
+const MISSED_CYCLES_THRESHOLD = 10; // Number of cycles a server can be missed before being marked as closed
+const DELETION_DELAY_MS = 24 * 60 * 60 * 1000; // 24 hours: time after a server is closed before it's deleted
 
 // --- INITIALIZATION ---
-console.log("Initializing Firebase connection...");
-const app = initializeApp(firebaseConfig);
-const db = getFirestore(app);
-const serversCollectionRef = collection(db, SERVERS_COLLECTION);
-console.log("Firebase initialized successfully.");
+let db;
+try {
+    console.log("Initializing Firebase connection...");
+    const app = initializeApp(firebaseConfig);
+    db = getFirestore(app);
+    console.log("Firebase initialized successfully.");
+} catch (error) {
+    console.error("Firebase initialization failed:", error);
+    process.exit(1); // Exit if Firebase can't be initialized
+}
 
 // --- CORE MONITORING LOGIC ---
-async function fetchRobloxServers() {
-    try {
-        const response = await fetch(ROBLOX_API_URL);
-        if (!response.ok) throw new Error(`Roblox API returned status ${response.status}`);
-        const json = await response.json();
-        return json.data || [];
-    } catch (error) {
-        console.error("Error fetching from Roblox API:", error.message);
-        return [];
-    }
-}
-
-async function getTrackedServersFromDB() {
-    const serverSnapshot = await getDocs(serversCollectionRef);
-    const trackedServers = new Map();
-    serverSnapshot.forEach(doc => {
-        trackedServers.set(doc.id, doc.data());
-    });
-    return trackedServers;
-}
-
 async function monitorServers() {
-    console.log(`[${new Date().toISOString()}] Running monitoring cycle...`);
-    const [liveServers, trackedServers] = await Promise.all([fetchRobloxServers(), getTrackedServersFromDB()]);
-    const liveServerIds = new Set(liveServers.map(s => s.id));
+    const logTimestamp = `[${new Date().toISOString()}]`;
+    console.log(`${logTimestamp} Running monitoring cycle...`);
 
-    for (const server of liveServers) {
-        if (!trackedServers.has(server.id)) {
-            // *** FIX: Check if server.created is a valid date before using it ***
-            const createdDate = server.created && !isNaN(new Date(server.created)) 
-                ? new Date(server.created) 
-                : new Date(); // Fallback to current time if invalid
+    try {
+        // 1. Fetch current servers from Roblox API
+        const response = await fetch(ROBLOX_API_URL);
+        if (!response.ok) {
+            console.error(`Error fetching from Roblox API: Roblox API returned status ${response.status}`);
+            return;
+        }
+        const apiResult = await response.json();
+        const apiServers = new Map(apiResult.data.map(server => [server.id, server]));
 
-            console.log(`New server found: ${server.id}. Adding to database.`);
-            const newServerData = {
-                jobId: server.id,
-                created: createdDate.toISOString(),
-                status: 'active',
-                finalUptime: 0,
-                lastSeen: new Date().toISOString()
-            };
-            // Use a try-catch block to handle potential Firestore permission errors gracefully
-            try {
-                await setDoc(doc(db, SERVERS_COLLECTION, server.id), newServerData);
-            } catch (error) {
-                console.error(`Firestore Error: Failed to add server ${server.id}.`, error.message);
+        // 2. Fetch all tracked servers from Firestore
+        const serversCollectionRef = collection(db, SERVERS_COLLECTION);
+        const snapshot = await getDocs(serversCollectionRef);
+        const dbServers = new Map();
+        snapshot.forEach(doc => {
+            dbServers.set(doc.id, doc.data());
+        });
+        
+        const batch = writeBatch(db);
+        const now = new Date();
+
+        // 3. Process servers found in the API
+        for (const [jobId, apiServerData] of apiServers) {
+            const serverDocRef = doc(db, SERVERS_COLLECTION, jobId);
+            const dbServerData = dbServers.get(jobId);
+
+            if (dbServerData) {
+                // Server exists, reset missedCycles if it was previously missed
+                if (dbServerData.missedCycles > 0) {
+                    batch.update(serverDocRef, { missedCycles: 0, status: 'active' });
+                }
+            } else {
+                // New server found, add it to the database
+                console.log(`New server found: ${jobId}. Adding to database.`);
+                // Defensive check for 'created' field
+                if (!apiServerData.created || isNaN(new Date(apiServerData.created))) {
+                    console.error(`Invalid or missing 'created' date for new server ${jobId}. Skipping.`);
+                    continue;
+                }
+                batch.set(serverDocRef, {
+                    jobId: jobId,
+                    status: 'active',
+                    created: new Date(apiServerData.created).toISOString(),
+                    missedCycles: 0
+                });
             }
-        } else {
-            const serverRef = doc(db, SERVERS_COLLECTION, server.id);
-            await updateDoc(serverRef, { lastSeen: new Date().toISOString() }).catch(err => console.error(`Firestore Error: Failed to update server ${server.id}.`, err.message));
         }
-    }
+        
+        // 4. Process servers from DB that are missing from API or need cleanup
+        for (const [jobId, dbServerData] of dbServers) {
+            const serverDocRef = doc(db, SERVERS_COLLECTION, jobId);
 
-    for (const [jobId, serverData] of trackedServers.entries()) {
-        if (serverData.status === 'active' && !liveServerIds.has(jobId)) {
-            console.log(`Server closed: ${jobId}. Updating status.`);
-            const createdDate = new Date(serverData.created);
-            const finalUptime = Math.round((new Date() - createdDate) / 1000);
-            const serverRef = doc(db, SERVERS_COLLECTION, jobId);
-            await updateDoc(serverRef, { status: 'closed', finalUptime: finalUptime }).catch(err => console.error(`Firestore Error: Failed to close server ${jobId}.`, err.message));
+            // A. Handle active servers that are missing from the API
+            if (!apiServers.has(jobId) && dbServerData.status === 'active') {
+                const newMissedCount = (dbServerData.missedCycles || 0) + 1;
+                
+                if (newMissedCount >= MISSED_CYCLES_THRESHOLD) {
+                    console.log(`Server ${jobId} missed ${MISSED_CYCLES_THRESHOLD} cycles. Marking as closed.`);
+                    const createdDate = new Date(dbServerData.created);
+                    const finalUptime = (now - createdDate) / 1000;
+                    batch.update(serverDocRef, { 
+                        status: 'closed', 
+                        finalUptime: finalUptime,
+                        closedAt: now.toISOString()
+                    });
+                } else {
+                     console.log(`Server ${jobId} missed. Incrementing missedCycles to ${newMissedCount}.`);
+                    batch.update(serverDocRef, { missedCycles: newMissedCount });
+                }
+            }
+
+            // B. Handle old, closed servers that need to be deleted
+            if (dbServerData.status === 'closed' && dbServerData.closedAt) {
+                const closedDate = new Date(dbServerData.closedAt);
+                if ((now - closedDate) > DELETION_DELAY_MS) {
+                    console.log(`Deleting old server record ${jobId} (closed for more than 24 hours).`);
+                    batch.delete(serverDocRef);
+                }
+            }
         }
+        
+        await batch.commit();
+
+    } catch (error) {
+        console.error("An error occurred during the monitoring cycle:", error);
+    } finally {
+        console.log("Monitoring cycle complete.");
     }
-    console.log("Monitoring cycle complete.");
 }
 
-// --- START THE MONITORING ---
+// --- SERVER & SCHEDULER SETUP ---
 console.log("Starting 24/7 Roblox Server Monitor.");
-console.log(`Polling Roblox API every ${POLLING_INTERVAL_MS / 1000} seconds.`);
 monitorServers();
 setInterval(monitorServers, POLLING_INTERVAL_MS);
+console.log(`Polling Roblox API every ${POLLING_INTERVAL_MS / 1000} seconds.`);
 
-// --- CREATE THE WEB SERVER ---
-const server = http.createServer((req, res) => {
-  res.writeHead(200, { 'Content-Type': 'text/plain' });
-  res.end('Monitoring service is active.\n');
-});
-
-server.listen(PORT, () => {
-  console.log(`Health check server listening on port ${PORT}`);
+const port = process.env.PORT || 10000;
+http.createServer((req, res) => {
+    res.writeHead(200, { 'Content-Type': 'text/plain' });
+    res.end('Monitoring service is running.\n');
+}).listen(port, () => {
+    console.log(`Health check server listening on port ${port}`);
 });
