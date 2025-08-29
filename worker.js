@@ -1,5 +1,6 @@
 // worker.js - 24/7 Roblox Server Monitor (Web Service Version)
 // This script runs as a web service to stay awake on Render's free tier.
+// CORRECTED: Added a check for valid date to prevent crashing.
 
 // --- IMPORTS ---
 import { initializeApp } from "firebase/app";
@@ -8,7 +9,7 @@ import fetch from 'node-fetch';
 import http from 'http'; // Import the built-in HTTP module
 
 // --- CONFIGURATION ---
-// IMPORTANT: Replace with your Firebase project's configuration.
+// !!! IMPORTANT: Replace with your REAL Firebase project's configuration. !!!
 const firebaseConfig = {
   apiKey: "YOUR_API_KEY",
   authDomain: "YOUR_PROJECT_ID.firebaseapp.com",
@@ -30,7 +31,7 @@ const db = getFirestore(app);
 const serversCollectionRef = collection(db, SERVERS_COLLECTION);
 console.log("Firebase initialized successfully.");
 
-// --- CORE MONITORING LOGIC (Unchanged) ---
+// --- CORE MONITORING LOGIC ---
 async function fetchRobloxServers() {
     try {
         const response = await fetch(ROBLOX_API_URL);
@@ -59,18 +60,28 @@ async function monitorServers() {
 
     for (const server of liveServers) {
         if (!trackedServers.has(server.id)) {
+            // *** FIX: Check if server.created is a valid date before using it ***
+            const createdDate = server.created && !isNaN(new Date(server.created)) 
+                ? new Date(server.created) 
+                : new Date(); // Fallback to current time if invalid
+
             console.log(`New server found: ${server.id}. Adding to database.`);
             const newServerData = {
                 jobId: server.id,
-                created: new Date(server.created).toISOString(),
+                created: createdDate.toISOString(),
                 status: 'active',
                 finalUptime: 0,
                 lastSeen: new Date().toISOString()
             };
-            await setDoc(doc(db, SERVERS_COLLECTION, server.id), newServerData);
+            // Use a try-catch block to handle potential Firestore permission errors gracefully
+            try {
+                await setDoc(doc(db, SERVERS_COLLECTION, server.id), newServerData);
+            } catch (error) {
+                console.error(`Firestore Error: Failed to add server ${server.id}.`, error.message);
+            }
         } else {
             const serverRef = doc(db, SERVERS_COLLECTION, server.id);
-            await updateDoc(serverRef, { lastSeen: new Date().toISOString() });
+            await updateDoc(serverRef, { lastSeen: new Date().toISOString() }).catch(err => console.error(`Firestore Error: Failed to update server ${server.id}.`, err.message));
         }
     }
 
@@ -80,21 +91,19 @@ async function monitorServers() {
             const createdDate = new Date(serverData.created);
             const finalUptime = Math.round((new Date() - createdDate) / 1000);
             const serverRef = doc(db, SERVERS_COLLECTION, jobId);
-            await updateDoc(serverRef, { status: 'closed', finalUptime: finalUptime });
+            await updateDoc(serverRef, { status: 'closed', finalUptime: finalUptime }).catch(err => console.error(`Firestore Error: Failed to close server ${jobId}.`, err.message));
         }
     }
     console.log("Monitoring cycle complete.");
 }
 
 // --- START THE MONITORING ---
-// This part runs as soon as the script starts, independent of the server.
 console.log("Starting 24/7 Roblox Server Monitor.");
 console.log(`Polling Roblox API every ${POLLING_INTERVAL_MS / 1000} seconds.`);
-monitorServers(); // Run once immediately
+monitorServers();
 setInterval(monitorServers, POLLING_INTERVAL_MS);
 
 // --- CREATE THE WEB SERVER ---
-// This server's only job is to respond to pings to keep the service alive.
 const server = http.createServer((req, res) => {
   res.writeHead(200, { 'Content-Type': 'text/plain' });
   res.end('Monitoring service is active.\n');
