@@ -1,11 +1,11 @@
-// worker.js - 24/7 Roblox Server Monitor Backend
-// This script runs on a server (e.g., using Node.js) to provide continuous monitoring.
+// worker.js - 24/7 Roblox Server Monitor (Web Service Version)
+// This script runs as a web service to stay awake on Render's free tier.
 
 // --- IMPORTS ---
-// You need to install these packages: npm install firebase node-fetch
 import { initializeApp } from "firebase/app";
 import { getFirestore, collection, doc, getDocs, setDoc, updateDoc } from "firebase/firestore";
 import fetch from 'node-fetch';
+import http from 'http'; // Import the built-in HTTP module
 
 // --- CONFIGURATION ---
 // IMPORTANT: Replace with your Firebase project's configuration.
@@ -19,8 +19,9 @@ const firebaseConfig = {
 };
 
 const ROBLOX_API_URL = 'https://games.roblox.com/v1/games/14289997240/servers/0?sortOrder=2&excludeFullGames=false&limit=100';
-const POLLING_INTERVAL_MS = 15000; // Poll every 15 seconds to be safe.
-const SERVERS_COLLECTION = 'servers'; // The name of our Firestore collection.
+const POLLING_INTERVAL_MS = 15000;
+const SERVERS_COLLECTION = 'servers';
+const PORT = process.env.PORT || 10000; // Render provides a PORT environment variable
 
 // --- INITIALIZATION ---
 console.log("Initializing Firebase connection...");
@@ -29,30 +30,19 @@ const db = getFirestore(app);
 const serversCollectionRef = collection(db, SERVERS_COLLECTION);
 console.log("Firebase initialized successfully.");
 
-// --- CORE MONITORING LOGIC ---
-
-/**
- * Fetches the current list of servers from the Roblox API.
- * @returns {Promise<Array>} A promise that resolves to an array of server objects.
- */
+// --- CORE MONITORING LOGIC (Unchanged) ---
 async function fetchRobloxServers() {
     try {
         const response = await fetch(ROBLOX_API_URL);
-        if (!response.ok) {
-            throw new Error(`Roblox API returned status ${response.status}`);
-        }
+        if (!response.ok) throw new Error(`Roblox API returned status ${response.status}`);
         const json = await response.json();
         return json.data || [];
     } catch (error) {
         console.error("Error fetching from Roblox API:", error.message);
-        return []; // Return empty array on failure to prevent crashing
+        return [];
     }
 }
 
-/**
- * Gets the current state of all servers we are tracking from Firestore.
- * @returns {Promise<Map<string, object>>} A map of server data with jobID as the key.
- */
 async function getTrackedServersFromDB() {
     const serverSnapshot = await getDocs(serversCollectionRef);
     const trackedServers = new Map();
@@ -62,23 +52,11 @@ async function getTrackedServersFromDB() {
     return trackedServers;
 }
 
-
-/**
- * The main monitoring loop that runs continuously.
- */
 async function monitorServers() {
     console.log(`[${new Date().toISOString()}] Running monitoring cycle...`);
-
-    // 1. Get the current state from both Roblox API and our Database
-    const [liveServers, trackedServers] = await Promise.all([
-        fetchRobloxServers(),
-        getTrackedServersFromDB()
-    ]);
-
+    const [liveServers, trackedServers] = await Promise.all([fetchRobloxServers(), getTrackedServersFromDB()]);
     const liveServerIds = new Set(liveServers.map(s => s.id));
-    console.log(`Found ${liveServers.length} live servers and ${trackedServers.size} tracked servers.`);
 
-    // 2. Process new servers
     for (const server of liveServers) {
         if (!trackedServers.has(server.id)) {
             console.log(`New server found: ${server.id}. Adding to database.`);
@@ -89,37 +67,39 @@ async function monitorServers() {
                 finalUptime: 0,
                 lastSeen: new Date().toISOString()
             };
-            // Add the new server to Firestore. Use setDoc with the ID as the document name.
             await setDoc(doc(db, SERVERS_COLLECTION, server.id), newServerData);
         } else {
-             // If we already track it, just update its 'lastSeen' timestamp
             const serverRef = doc(db, SERVERS_COLLECTION, server.id);
             await updateDoc(serverRef, { lastSeen: new Date().toISOString() });
         }
     }
 
-    // 3. Process closed servers
     for (const [jobId, serverData] of trackedServers.entries()) {
         if (serverData.status === 'active' && !liveServerIds.has(jobId)) {
-            console.log(`Server closed: ${jobId}. Updating status and final uptime.`);
+            console.log(`Server closed: ${jobId}. Updating status.`);
             const createdDate = new Date(serverData.created);
-            const closedDate = new Date();
-            const finalUptime = Math.round((closedDate - createdDate) / 1000);
-
+            const finalUptime = Math.round((new Date() - createdDate) / 1000);
             const serverRef = doc(db, SERVERS_COLLECTION, jobId);
-            await updateDoc(serverRef, {
-                status: 'closed',
-                finalUptime: finalUptime
-            });
+            await updateDoc(serverRef, { status: 'closed', finalUptime: finalUptime });
         }
     }
     console.log("Monitoring cycle complete.");
 }
 
-// --- START THE ENGINE ---
+// --- START THE MONITORING ---
+// This part runs as soon as the script starts, independent of the server.
 console.log("Starting 24/7 Roblox Server Monitor.");
 console.log(`Polling Roblox API every ${POLLING_INTERVAL_MS / 1000} seconds.`);
-
-// Run the monitor once immediately, then set it on an interval.
-monitorServers();
+monitorServers(); // Run once immediately
 setInterval(monitorServers, POLLING_INTERVAL_MS);
+
+// --- CREATE THE WEB SERVER ---
+// This server's only job is to respond to pings to keep the service alive.
+const server = http.createServer((req, res) => {
+  res.writeHead(200, { 'Content-Type': 'text/plain' });
+  res.end('Monitoring service is active.\n');
+});
+
+server.listen(PORT, () => {
+  console.log(`Health check server listening on port ${PORT}`);
+});
