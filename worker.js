@@ -5,7 +5,6 @@ import fetch from 'node-fetch';
 import http from 'http';
 
 // --- CONFIGURATION ---
-// This has been updated with your Firebase credentials.
 const firebaseConfig = {
     apiKey: "AIzaSyDb3OPy_7Zc7cwlsC2Kz2cdzfT2R6HLseI",
     authDomain: "server-f6123.firebaseapp.com",
@@ -31,7 +30,7 @@ try {
     console.log("Firebase initialized successfully.");
 } catch (error) {
     console.error("Firebase initialization failed:", error);
-    process.exit(1); // Exit if Firebase can't be initialized
+    process.exit(1);
 }
 
 // --- CORE MONITORING LOGIC ---
@@ -40,7 +39,6 @@ async function monitorServers() {
     console.log(`${logTimestamp} Running monitoring cycle...`);
 
     try {
-        // 1. Fetch current servers from Roblox API
         const response = await fetch(ROBLOX_API_URL);
         if (!response.ok) {
             console.error(`Error fetching from Roblox API: Roblox API returned status ${response.status}`);
@@ -49,7 +47,6 @@ async function monitorServers() {
         const apiResult = await response.json();
         const apiServers = new Map(apiResult.data.map(server => [server.id, server]));
 
-        // 2. Fetch all tracked servers from Firestore
         const serversCollectionRef = collection(db, SERVERS_COLLECTION);
         const snapshot = await getDocs(serversCollectionRef);
         const dbServers = new Map();
@@ -60,38 +57,38 @@ async function monitorServers() {
         const batch = writeBatch(db);
         const now = new Date();
 
-        // 3. Process servers found in the API
         for (const [jobId, apiServerData] of apiServers) {
             const serverDocRef = doc(db, SERVERS_COLLECTION, jobId);
             const dbServerData = dbServers.get(jobId);
 
             if (dbServerData) {
-                // Server exists, reset missedCycles if it was previously missed
                 if (dbServerData.missedCycles > 0) {
                     batch.update(serverDocRef, { missedCycles: 0, status: 'active' });
                 }
             } else {
-                // New server found, add it to the database
                 console.log(`New server found: ${jobId}. Adding to database.`);
-                // Defensive check for 'created' field
+                
+                // *** FIX: Handle invalid 'created' date gracefully ***
+                let createdDate;
                 if (!apiServerData.created || isNaN(new Date(apiServerData.created))) {
-                    console.error(`Invalid or missing 'created' date for new server ${jobId}. Skipping.`);
-                    continue;
+                    console.warn(`Invalid or missing 'created' date for new server ${jobId}. Using current time as fallback.`);
+                    createdDate = new Date(); // Use current time as a fallback
+                } else {
+                    createdDate = new Date(apiServerData.created);
                 }
+
                 batch.set(serverDocRef, {
                     jobId: jobId,
                     status: 'active',
-                    created: new Date(apiServerData.created).toISOString(),
+                    created: createdDate.toISOString(), // Use the (potentially fallback) date
                     missedCycles: 0
                 });
             }
         }
         
-        // 4. Process servers from DB that are missing from API or need cleanup
         for (const [jobId, dbServerData] of dbServers) {
             const serverDocRef = doc(db, SERVERS_COLLECTION, jobId);
 
-            // A. Handle active servers that are missing from the API
             if (!apiServers.has(jobId) && dbServerData.status === 'active') {
                 const newMissedCount = (dbServerData.missedCycles || 0) + 1;
                 
@@ -110,7 +107,6 @@ async function monitorServers() {
                 }
             }
 
-            // B. Handle old, closed servers that need to be deleted
             if (dbServerData.status === 'closed' && dbServerData.closedAt) {
                 const closedDate = new Date(dbServerData.closedAt);
                 if ((now - closedDate) > DELETION_DELAY_MS) {
@@ -142,3 +138,4 @@ http.createServer((req, res) => {
 }).listen(port, () => {
     console.log(`Health check server listening on port ${port}`);
 });
+
