@@ -11,12 +11,13 @@ import http from 'http'; // Import the built-in HTTP module
 // --- CONFIGURATION ---
 // !!! IMPORTANT: Replace with your REAL Firebase project's configuration. !!!
 const firebaseConfig = {
-  apiKey: "YOUR_API_KEY",
-  authDomain: "YOUR_PROJECT_ID.firebaseapp.com",
-  projectId: "YOUR_PROJECT_ID",
-  storageBucket: "YOUR_PROJECT_ID.appspot.com",
-  messagingSenderId: "YOUR_SENDER_ID",
-  appId: "YOUR_APP_ID"
+  apiKey: "AIzaSyDb3OPy_7Zc7cwlsC2Kz2cdzfT2R6HLseI",
+  authDomain: "server-f6123.firebaseapp.com",
+  projectId: "server-f6123",
+  storageBucket: "server-f6123.firebasestorage.app",
+  messagingSenderId: "189465017648",
+  appId: "1:189465017648:web:a07cee03ea2b9702ab9cf5",
+  measurementId: "G-G66FFHRDSJ"
 };
 
 const ROBLOX_API_URL = 'https://games.roblox.com/v1/games/14289997240/servers/0?sortOrder=2&excludeFullGames=false&limit=100';
@@ -112,3 +113,4 @@ const server = http.createServer((req, res) => {
 server.listen(PORT, () => {
   console.log(`Health check server listening on port ${PORT}`);
 });
+
