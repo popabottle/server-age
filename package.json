@@ -1,7 +1,7 @@
 {
-  "name": "roblox-monitor-backend",
+  "name": "roblox-monitor-webservice",
   "version": "1.0.0",
-  "description": "A 24/7 worker to monitor Roblox servers and log data to Firestore.",
+  "description": "A 24/7 worker (as a web service) to monitor Roblox servers.",
   "main": "worker.js",
   "type": "module",
   "scripts": {
