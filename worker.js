@@ -57,38 +57,33 @@ async function monitorServers() {
         const batch = writeBatch(db);
         const now = new Date();
 
+        // Process servers currently in the API
         for (const [jobId, apiServerData] of apiServers) {
             const serverDocRef = doc(db, SERVERS_COLLECTION, jobId);
             const dbServerData = dbServers.get(jobId);
 
             if (dbServerData) {
+                // If the server exists and was previously marked as 'missed', reset its counter
                 if (dbServerData.missedCycles > 0) {
-                    batch.update(serverDocRef, { missedCycles: 0, status: 'active' });
+                    batch.update(serverDocRef, { missedCycles: 0 });
                 }
             } else {
+                // *** FIX: This is a new server. Log the current time as its creation time. ***
                 console.log(`New server found: ${jobId}. Adding to database.`);
-                
-                // *** FIX: Handle invalid 'created' date gracefully ***
-                let createdDate;
-                if (!apiServerData.created || isNaN(new Date(apiServerData.created))) {
-                    console.warn(`Invalid or missing 'created' date for new server ${jobId}. Using current time as fallback.`);
-                    createdDate = new Date(); // Use current time as a fallback
-                } else {
-                    createdDate = new Date(apiServerData.created);
-                }
-
                 batch.set(serverDocRef, {
                     jobId: jobId,
                     status: 'active',
-                    created: createdDate.toISOString(), // Use the (potentially fallback) date
+                    created: now.toISOString(), // The monitor logs the creation time
                     missedCycles: 0
                 });
             }
         }
         
+        // Process servers that are in the database but NOT in the API anymore
         for (const [jobId, dbServerData] of dbServers) {
             const serverDocRef = doc(db, SERVERS_COLLECTION, jobId);
 
+            // Handle potentially closed servers
             if (!apiServers.has(jobId) && dbServerData.status === 'active') {
                 const newMissedCount = (dbServerData.missedCycles || 0) + 1;
                 
@@ -107,6 +102,7 @@ async function monitorServers() {
                 }
             }
 
+            // Handle automatic deletion of old, closed servers
             if (dbServerData.status === 'closed' && dbServerData.closedAt) {
                 const closedDate = new Date(dbServerData.closedAt);
                 if ((now - closedDate) > DELETION_DELAY_MS) {
