@@ -1,6 +1,6 @@
 // worker.js - 24/7 Roblox Server Monitor (Web Service Version)
 // This script runs as a web service to stay awake on Render's free tier.
-// CORRECTED: Added a check for valid date to prevent crashing.
+// CORRECTED: Added a check for valid date and increased polling interval to avoid rate limiting.
 
 // --- IMPORTS ---
 import { initializeApp } from "firebase/app";
@@ -9,19 +9,20 @@ import fetch from 'node-fetch';
 import http from 'http'; // Import the built-in HTTP module
 
 // --- CONFIGURATION ---
-// !!! IMPORTANT: Replace with your REAL Firebase project's configuration. !!!
+// !!! IMPORTANT: This has been updated with your Firebase project's configuration. !!!
 const firebaseConfig = {
   apiKey: "AIzaSyDb3OPy_7Zc7cwlsC2Kz2cdzfT2R6HLseI",
   authDomain: "server-f6123.firebaseapp.com",
   projectId: "server-f6123",
-  storageBucket: "server-f6123.firebasestorage.app",
+  storageBucket: "server-f6123.appspot.com",
   messagingSenderId: "189465017648",
   appId: "1:189465017648:web:a07cee03ea2b9702ab9cf5",
   measurementId: "G-G66FFHRDSJ"
 };
 
 const ROBLOX_API_URL = 'https://games.roblox.com/v1/games/14289997240/servers/0?sortOrder=2&excludeFullGames=false&limit=100';
-const POLLING_INTERVAL_MS = 15000;
+// *** FIX: Increased polling interval to 45 seconds to avoid 429 Too Many Requests error ***
+const POLLING_INTERVAL_MS = 45000; 
 const SERVERS_COLLECTION = 'servers';
 const PORT = process.env.PORT || 10000; // Render provides a PORT environment variable
 
@@ -113,4 +114,3 @@ const server = http.createServer((req, res) => {
 server.listen(PORT, () => {
   console.log(`Health check server listening on port ${PORT}`);
 });
-
