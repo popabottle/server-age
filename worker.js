@@ -19,7 +19,7 @@ const ROBLOX_API_URL = 'https://games.roblox.com/v1/games/14289997240/servers/0?
 const POLLING_INTERVAL_MS = 45 * 1000; // 45 seconds to avoid rate-limiting
 const SERVERS_COLLECTION = 'servers';
 const MISSED_CYCLES_THRESHOLD = 10; // Number of cycles a server can be missed before being marked as closed
-const DELETION_DELAY_MS = 24 * 60 * 60 * 1000; // 24 hours: time after a server is closed before it's deleted
+const DELETION_DELAY_MS = 5 * 60 * 1000; // 5 minutes: time after a server is closed before it's deleted
 
 // --- INITIALIZATION ---
 let db;
@@ -45,6 +45,12 @@ async function monitorServers() {
             return;
         }
         const apiResult = await response.json();
+
+        if (!apiResult || !Array.isArray(apiResult.data)) {
+            console.warn("Roblox API did not return a valid data array. Skipping this cycle.");
+            return;
+        }
+
         const apiServers = new Map(apiResult.data.map(server => [server.id, server]));
 
         const serversCollectionRef = collection(db, SERVERS_COLLECTION);
@@ -57,33 +63,31 @@ async function monitorServers() {
         const batch = writeBatch(db);
         const now = new Date();
 
-        // Process servers currently in the API
         for (const [jobId, apiServerData] of apiServers) {
             const serverDocRef = doc(db, SERVERS_COLLECTION, jobId);
             const dbServerData = dbServers.get(jobId);
 
             if (dbServerData) {
-                // If the server exists and was previously marked as 'missed', reset its counter
+                const updates = { playerCount: apiServerData.playing };
                 if (dbServerData.missedCycles > 0) {
-                    batch.update(serverDocRef, { missedCycles: 0 });
+                    updates.missedCycles = 0;
                 }
+                batch.update(serverDocRef, updates);
             } else {
-                // *** FIX: This is a new server. Log the current time as its creation time. ***
                 console.log(`New server found: ${jobId}. Adding to database.`);
                 batch.set(serverDocRef, {
                     jobId: jobId,
                     status: 'active',
-                    created: now.toISOString(), // The monitor logs the creation time
-                    missedCycles: 0
+                    created: now.toISOString(),
+                    missedCycles: 0,
+                    playerCount: apiServerData.playing
                 });
             }
         }
         
-        // Process servers that are in the database but NOT in the API anymore
         for (const [jobId, dbServerData] of dbServers) {
             const serverDocRef = doc(db, SERVERS_COLLECTION, jobId);
 
-            // Handle potentially closed servers
             if (!apiServers.has(jobId) && dbServerData.status === 'active') {
                 const newMissedCount = (dbServerData.missedCycles || 0) + 1;
                 
@@ -102,11 +106,10 @@ async function monitorServers() {
                 }
             }
 
-            // Handle automatic deletion of old, closed servers
             if (dbServerData.status === 'closed' && dbServerData.closedAt) {
                 const closedDate = new Date(dbServerData.closedAt);
                 if ((now - closedDate) > DELETION_DELAY_MS) {
-                    console.log(`Deleting old server record ${jobId} (closed for more than 24 hours).`);
+                    console.log(`Deleting old server record ${jobId} (closed for more than 5 minutes).`);
                     batch.delete(serverDocRef);
                 }
             }
