@@ -16,10 +16,10 @@ const firebaseConfig = {
 };
 
 const ROBLOX_API_URL = 'https://games.roblox.com/v1/games/14289997240/servers/0?sortOrder=2&excludeFullGames=false&limit=100';
-const POLLING_INTERVAL_MS = 45 * 1000; // 45 seconds to avoid rate-limiting
+const POLLING_INTERVAL_MS = 45 * 1000;
 const SERVERS_COLLECTION = 'servers';
-const MISSED_CYCLES_THRESHOLD = 10; // Number of cycles a server can be missed before being marked as closed
-const DELETION_DELAY_MS = 5 * 60 * 1000; // 5 minutes: time after a server is closed before it's deleted
+const MISSED_CYCLES_THRESHOLD = 10;
+const DELETION_DELAY_MS = 5 * 60 * 1000;
 
 // --- INITIALIZATION ---
 let db;
@@ -38,8 +38,9 @@ async function monitorServers() {
     const logTimestamp = `[${new Date().toISOString()}]`;
     console.log(`${logTimestamp} Running monitoring cycle...`);
 
+    // *** FIX: Wrap entire logic in a try...catch to prevent any crash from stopping the service ***
     try {
-        const response = await fetch(ROBLOX_API_URL);
+        const response = await fetch(ROBLOX_API_URL, { timeout: 15000 }); // Added timeout
         if (!response.ok) {
             console.error(`Error fetching from Roblox API: Roblox API returned status ${response.status}`);
             return;
@@ -52,6 +53,7 @@ async function monitorServers() {
         }
 
         const apiServers = new Map(apiResult.data.map(server => [server.id, server]));
+        console.log(`Found ${apiServers.size} servers in API response.`);
 
         const serversCollectionRef = collection(db, SERVERS_COLLECTION);
         const snapshot = await getDocs(serversCollectionRef);
@@ -109,7 +111,7 @@ async function monitorServers() {
             if (dbServerData.status === 'closed' && dbServerData.closedAt) {
                 const closedDate = new Date(dbServerData.closedAt);
                 if ((now - closedDate) > DELETION_DELAY_MS) {
-                    console.log(`Deleting old server record ${jobId} (closed for more than 5 minutes).`);
+                    console.log(`Deleting old server record ${jobId}.`);
                     batch.delete(serverDocRef);
                 }
             }
@@ -118,7 +120,8 @@ async function monitorServers() {
         await batch.commit();
 
     } catch (error) {
-        console.error("An error occurred during the monitoring cycle:", error);
+        // This will catch any unexpected error and log it, instead of crashing the process.
+        console.error("!!! An unexpected error occurred during the monitoring cycle:", error);
     } finally {
         console.log("Monitoring cycle complete.");
     }
@@ -126,7 +129,6 @@ async function monitorServers() {
 
 // --- SERVER & SCHEDULER SETUP ---
 console.log("Starting 24/7 Roblox Server Monitor.");
-monitorServers();
 setInterval(monitorServers, POLLING_INTERVAL_MS);
 console.log(`Polling Roblox API every ${POLLING_INTERVAL_MS / 1000} seconds.`);
 
